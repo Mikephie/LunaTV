@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Docker 标签'
+        description: 'Docker 标签（默认 latest）'
         required: false
         default: 'latest'
         type: string
       IMAGE_OWNER:
-        description: '可选：镜像命名空间所有者（留空则使用当前仓库拥有者；例如填 moontechlab 推到组织）'
+        description: '镜像命名空间（留空=当前仓库拥有者；也可填组织名如 moontechlab）'
         required: false
         default: ''
         type: string
@@ -26,6 +26,9 @@ permissions:
   contents: write
   packages: write
   actions: write
+
+env:
+  DEFAULT_TAG: latest
 
 jobs:
   build:
@@ -48,39 +51,47 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          install: true
 
-      # === 新增：统一计算镜像命名空间与标签（不改变后续结构）===
+      # 统一计算 IMAGE/TAG
       - name: Compute image name and tag
         id: imgcfg
         run: |
           TAG_INPUT='${{ github.event.inputs.tag }}'
-          if [ -z "$TAG_INPUT" ]; then TAG_INPUT='latest'; fi
+          if [ -z "$TAG_INPUT" ]; then TAG_INPUT='${{ env.DEFAULT_TAG }}'; fi
           OWNER_INPUT='${{ github.event.inputs.IMAGE_OWNER }}'
           if [ -z "$OWNER_INPUT" ]; then OWNER_INPUT='${{ github.repository_owner }}'; fi
           OWNER_INPUT=$(echo "$OWNER_INPUT" | tr '[:upper:]' '[:lower:]')
           echo "TAG=$TAG_INPUT" >> $GITHUB_ENV
           echo "IMAGE=ghcr.io/${OWNER_INPUT}/lunatv" >> $GITHUB_ENV
-          echo "Using IMAGE=$OWNER_INPUT/lunatv TAG=$TAG_INPUT"
+          echo "Using IMAGE=${OWNER_INPUT}/lunatv TAG=${TAG_INPUT}"
 
+      # 登录 GHCR（任选其一：PAT 或 GITHUB_TOKEN）
       - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          # 使用你已添加的 Secrets（若想用 GITHUB_TOKEN，把这两行改回 actor + GITHUB_TOKEN 即可）
+          # —— 使用你添加的 PAT（推到组织或任意命名空间）——
           username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set lowercase repository owner
-        id: lowercase
-        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          password: ${{ secrets.GHCR_PAT }}
+          # —— 或改用 GITHUB_TOKEN（推到自己命名空间，需开启 Actions: Read & write）——
+          # username: ${{ github.actor }}
+          # password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/lunatv
+          images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=${{ env.TAG }},enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=LunaTV
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.run_started_at }}
 
       - name: Build and push by digest
         id: build
@@ -89,11 +100,13 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
+          # 只推 digest；最终 tag 在 merge 里合并
+          outputs: type=image,name=${{ env.IMAGE }},name-canonical=true,push-by-digest=true,push=${{ github.event_name != 'pull_request' }}
           labels: ${{ steps.meta.outputs.labels }}
-          # 仍然保留 tags 字段（不删除原结构），但实际“最终 tag 合并”在 merge job 完成；
-          # 为防 PR 污染，这里仅在非 PR 时 push
-          tags: ${{ env.IMAGE }}:${{ env.TAG }}
-          outputs: type=image,name=${{ env.IMAGE }},name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Export digest
         run: |
@@ -102,7 +115,7 @@ jobs:
           if [ -n "$digest" ]; then
             touch "/tmp/digests/${digest#sha256:}"
           else
-            echo "No digest (likely PR build without push). Creating placeholder to keep structure."
+            echo "No digest (likely PR build); creating placeholder."
             touch "/tmp/digests/placeholder"
           fi
 
@@ -116,8 +129,8 @@ jobs:
 
   merge:
     runs-on: ubuntu-latest
-    needs:
-      - build
+    needs: [ build ]
+    if: github.event_name != 'pull_request'
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -126,6 +139,11 @@ jobs:
           pattern: digests-*
           merge-multiple: true
 
+      - name: Show downloaded digests
+        run: |
+          echo "=== /tmp/digests files ==="
+          ls -la /tmp/digests || true
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -133,45 +151,42 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
+          # 与 build 步保持一致（PAT 或 GITHUB_TOKEN 选其一）
           username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          # username: ${{ github.actor }}
+          # password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set lowercase repository owner
-        id: lowercase
-        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-      # === 新增：再次获取 IMAGE 与 TAG，保持合并步骤可复用 ===
-      - name: Read IMAGE and TAG from env
+      # 复算 IMAGE/TAG，确保一致
+      - name: Compute image name and tag
         run: |
-          if [ -z "${IMAGE}" ] || [ -z "${TAG}" ]; then
-            echo "IMAGE or TAG missing, reconstructing from inputs."
-            TAG_INPUT='${{ github.event.inputs.tag }}'
-            if [ -z "$TAG_INPUT" ]; then TAG_INPUT='latest'; fi
-            OWNER_INPUT='${{ github.event.inputs.IMAGE_OWNER }}'
-            if [ -z "$OWNER_INPUT" ]; then OWNER_INPUT='${{ github.repository_owner }}'; fi
-            OWNER_INPUT=$(echo "$OWNER_INPUT" | tr '[:upper:]' '[:lower:]')
-            echo "TAG=$TAG_INPUT" >> $GITHUB_ENV
-            echo "IMAGE=ghcr.io/${OWNER_INPUT}/lunatv" >> $GITHUB_ENV
-          fi
-          echo "Will create manifest for ${IMAGE}:${TAG}"
+          TAG_INPUT='${{ github.event.inputs.tag }}'
+          if [ -z "$TAG_INPUT" ]; then TAG_INPUT='${{ env.DEFAULT_TAG }}'; fi
+          OWNER_INPUT='${{ github.event.inputs.IMAGE_OWNER }}'
+          if [ -z "$OWNER_INPUT" ]; then OWNER_INPUT='${{ github.repository_owner }}'; fi
+          OWNER_INPUT=$(echo "$OWNER_INPUT" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE=ghcr.io/${OWNER_INPUT}/lunatv" >> $GITHUB_ENV
+          echo "TAG=$TAG_INPUT" >> $GITHUB_ENV
+          echo "Using IMAGE=${OWNER_INPUT}/lunatv TAG=${TAG_INPUT}"
 
       - name: Create manifest list and push
-        if: github.event_name != 'pull_request'
         working-directory: /tmp/digests
         run: |
-          # 过滤掉占位文件（PR 场景会有 placeholder）
-          DIGESTS=$(ls | grep -v placeholder || true)
+          set -euo pipefail
+          DIGESTS=$(ls | grep -E '^[0-9a-f]{64}$' || true)
           if [ -z "$DIGESTS" ]; then
-            echo "No real digests found (PR run). Skipping manifest creation."
-            exit 0
+            echo "::error::No digests found in /tmp/digests. Check build step permissions/push."
+            exit 1
           fi
-          docker buildx imagetools create -t ${IMAGE}:${TAG} \
-            $(printf '${IMAGE}@sha256:%s ' $DIGESTS)
+          echo "Merging digests:"
+          for d in $DIGESTS; do echo " - $d"; done
+          docker buildx imagetools create -t "${IMAGE}:${TAG}" \
+            $(printf '%s@sha256:%s ' "${IMAGE}" $DIGESTS)
+          docker buildx imagetools inspect "${IMAGE}:${TAG}"
 
   cleanup-refresh:
     runs-on: ubuntu-latest
-    needs:
-      - merge
+    needs: [ merge ]
     if: always()
     steps:
       - name: Delete workflow runs
