@@ -68,7 +68,7 @@ jobs:
           registry: ghcr.io
           # 使用你已添加的 Secrets（若想用 GITHUB_TOKEN，把这两行改回 actor + GITHUB_TOKEN 即可）
           username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set lowercase repository owner
         id: lowercase
@@ -78,7 +78,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ghcr.io/${{ github.repository_owner }}/lunatv
           tags: |
             type=raw,value=${{ env.TAG }},enable={{is_default_branch}}
 
