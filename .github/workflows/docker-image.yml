@@ -177,16 +177,33 @@ jobs:
         working-directory: /tmp/digests
         run: |
           set -euo pipefail
+
+          echo "📦 Available digest files:"
+          ls -1 | grep -E '^[0-9a-f]{64}$' || true
+
           DIGESTS=$(ls | grep -E '^[0-9a-f]{64}$' || true)
           if [ -z "$DIGESTS" ]; then
             echo "::error::No digests found in /tmp/digests. Check build step permissions/push."
             exit 1
           fi
-          echo "Merging digests:"
-          for d in $DIGESTS; do echo " - $d"; done
-          docker buildx imagetools create -t "${IMAGE}:${TAG}" \
-            $(printf '%s@sha256:%s ' "${IMAGE}" $DIGESTS)
+
+          # 构造正确格式的镜像引用
+          SOURCES=""
+          for d in $DIGESTS; do
+            SOURCES="${SOURCES} ${IMAGE}@sha256:${d}"
+          done
+
+          echo "🔗 Merging digests for ${IMAGE}:${TAG}"
+          echo "$SOURCES"
+
+          # 合并为多架构镜像
+          docker buildx imagetools create -t "${IMAGE}:${TAG}" ${SOURCES}
+
+          echo "✅ Inspect merged manifest:"
           docker buildx imagetools inspect "${IMAGE}:${TAG}"
+
+          echo "✅ 镜像构建完成："
+          echo "   https://${IMAGE}:${TAG}"
 
   cleanup-refresh:
     runs-on: ubuntu-latest
