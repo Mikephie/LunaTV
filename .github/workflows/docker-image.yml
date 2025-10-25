@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Docker 标签（默认 latest）。例：latest、stable、v1.2'
+        description: 'Docker 标签'
         required: false
         default: 'latest'
         type: string
@@ -21,11 +21,6 @@ permissions:
   contents: write
   packages: write
   actions: write
-  id-token: write     # 产出签名/证明
-
-env:
-  IMAGE: ghcr.io/moontechlab/lunatv
-  DEFAULT_TAG: latest
 
 jobs:
   build:
@@ -48,37 +43,26 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          install: true
 
       - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute target tag
-        id: tt
-        run: |
-          TAG="${{ github.event.inputs.tag }}"
-          if [ -z "$TAG" ]; then TAG="${DEFAULT_TAG}"; fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+      - name: Set lowercase repository owner
+        id: lowercase
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
+
         with:
-          images: ${{ env.IMAGE }}
+          images: ghcr.io/moontechlab/lunatv
           tags: |
-            type=raw,value=${{ steps.tt.outputs.tag }},enable={{is_default_branch}}
-            type=sha,enable=true,prefix=sha-
-          labels: |
-            org.opencontainers.image.title=LunaTV
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ github.run_started_at }}
+            type=raw,value=${{ github.event.inputs.tag || 'latest' }},enable={{is_default_branch}}
 
       - name: Build and push by digest
         id: build
@@ -87,24 +71,17 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
-          push: ${{ github.event_name != 'pull_request' }}
-          # 仅推 digest，最后统一打 tag
-          outputs: type=image,name=${{ env.IMAGE }},name-canonical=true,push-by-digest=true,push=${{ github.event_name != 'pull_request' }}
           labels: ${{ steps.meta.outputs.labels }}
-          provenance: mode=max
-          sbom: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ghcr.io/moontechlab/lunatv:${{ github.event.inputs.tag || 'latest' }}
+          outputs: type=image,name=ghcr.io/moontechlab/lunatv,name-canonical=true,push=true
 
       - name: Export digest
-        if: github.event_name != 'pull_request'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: digests-${{ env.PLATFORM_NAME }}
@@ -114,8 +91,8 @@ jobs:
 
   merge:
     runs-on: ubuntu-latest
-    needs: [ build ]
-    if: github.event_name != 'pull_request'
+    needs:
+      - build
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -134,30 +111,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute target tag
-        id: tt
-        run: |
-          TAG="${{ github.event.inputs.tag }}"
-          if [ -z "$TAG" ]; then TAG="${DEFAULT_TAG}"; fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+      - name: Set lowercase repository owner
+        id: lowercase
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-            -t ${{ env.IMAGE }}:${{ steps.tt.outputs.tag }} \
-            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
-
-      - name: Also tag by commit short SHA
-        run: |
-          SHORT_SHA="${GITHUB_SHA::7}"
-          docker buildx imagetools create \
-            -t ${{ env.IMAGE }}:sha-${SHORT_SHA} \
-            ${{ env.IMAGE }}:${{ steps.tt.outputs.tag }}
+          docker buildx imagetools create -t ghcr.io/moontechlab/lunatv:${{ github.event.inputs.tag || 'latest' }} \
+            $(printf 'ghcr.io/moontechlab/lunatv@sha256:%s ' *)
 
   cleanup-refresh:
     runs-on: ubuntu-latest
-    needs: [ merge ]
+    needs:
+      - merge
     if: always()
     steps:
       - name: Delete workflow runs
