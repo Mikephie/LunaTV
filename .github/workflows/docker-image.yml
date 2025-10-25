@@ -67,24 +67,20 @@ jobs:
           echo "IMAGE=ghcr.io/${OWNER_INPUT}/lunatv" >> $GITHUB_ENV
           echo "Using IMAGE=${OWNER_INPUT}/lunatv TAG=${TAG_INPUT}"
 
-      # 登录 GHCR（任选其一：PAT 或 GITHUB_TOKEN）
+      # 登录 GHCR（此处使用 PAT：GHCR_USERNAME + GHCR_PAT）
       - name: Login to GitHub Container Registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          # —— 使用你添加的 PAT（推到组织或任意命名空间）——
-          username: ${{ secrets.GHCR_USERNAME }}
+          username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          # —— 或改用 GITHUB_TOKEN（推到自己命名空间，需开启 Actions: Read & write）——
-          # username: ${{ github.actor }}
-          # password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/lunatv   # 会变成 ghcr.io/mikephie/lunatv
+          images: ${{ env.IMAGE }}   # ← 必须是 images (小写)
           tags: |
             type=raw,value=${{ env.TAG }},enable={{is_default_branch}}
           labels: |
@@ -151,11 +147,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          # 与 build 步保持一致（PAT 或 GITHUB_TOKEN 选其一）
           username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-          # username: ${{ github.actor }}
-          # password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT }}
 
       # 复算 IMAGE/TAG，确保一致
       - name: Compute image name and tag
