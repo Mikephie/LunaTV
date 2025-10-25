@@ -75,7 +75,7 @@ jobs:
           registry: ghcr.io
           # —— 使用你添加的 PAT（推到组织或任意命名空间）——
           username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
           # —— 或改用 GITHUB_TOKEN（推到自己命名空间，需开启 Actions: Read & write）——
           # username: ${{ github.actor }}
           # password: ${{ secrets.GITHUB_TOKEN }}
@@ -84,7 +84,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/lunatv   # 会变成 ghcr.io/mikephie/lunatv
           tags: |
             type=raw,value=${{ env.TAG }},enable={{is_default_branch}}
           labels: |
