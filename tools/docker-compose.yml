@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  lunatv:
+    image: ghcr.io/moontechlab/lunatv:latest
+    container_name: lunatv
+    restart: always
+    environment:
+      - USERNAME=admin
+      - PASSWORD=admin_password
+      - NEXT_PUBLIC_STORAGE_TYPE=kvrocks
+      - KVROCKS_URL=redis://moontv-kvrocks:6666
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - moontv-network
+
+  moontv-kvrocks:
+    image: apache/kvrocks
+    container_name: moontv-kvrocks
+    restart: unless-stopped
+    volumes:
+      - kvrocks-data:/var/lib/kvrocks
+    networks:
+      - moontv-network
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # 启用标签控制，仅更新标记了 enable=true 的容器
+      - WATCHTOWER_LABEL_ENABLE=true
+      # 更新后删除旧镜像
+      - WATCHTOWER_CLEANUP=true
+      # 每1小时检测一次更新
+      - WATCHTOWER_POLL_INTERVAL=3600
+      # 启用通知
+      - WATCHTOWER_NOTIFICATIONS=shoutrrr
+      # 你的 Telegram 通知 URL （真实数据）
+      - WATCHTOWER_NOTIFICATION_URL=telegram://8380925105:AAH-_KrpnCNYfkaG1QUMGRaiMzBrV7mrAoo@telegram?channels=812526739
+    networks:
+      - moontv-network
+
+networks:
+  moontv-network:
+    driver: bridge
+
+volumes:
+  kvrocks-data:
